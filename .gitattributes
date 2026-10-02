@@ -1,0 +1,15 @@
+* text=auto
+
+*.cpp   text eol=lf
+*.hpp   text eol=lf
+*.md    text eol=lf
+*.yml   text eol=lf
+*.txt   text eol=lf
+
+# Windows scripts must keep CRLF or cmd.exe mis-parses them
+*.bat   text eol=crlf
+
+*.jpg   binary
+*.png   binary
+*.addon64 binary
+*.dll   binary

@@ -1,0 +1,41 @@
+# Build output
+build/
+out/
+*.addon64
+*.pdb
+*.ilk
+*.obj
+*.exp
+*.lib
+
+# CMake
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+*.vcxproj
+*.vcxproj.filters
+*.vcxproj.user
+*.sln
+
+# ReShade headers, fetched locally for building
+reshade/
+reshade-include/
+third_party/
+
+# Local runtime files (never commit what the game writes)
+WuwaUID.status.txt
+WuwaUID.ini
+ReShade.log
+
+# Secrets — never commit
+_pat.txt
+*.pat
+*.token
+*_token.txt
+
+# Editors / OS
+.vs/
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini

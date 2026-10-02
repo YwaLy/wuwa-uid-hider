@@ -1,0 +1,55 @@
+name: build
+
+on:
+  push:
+    branches: [ main ]
+    tags: [ 'v*' ]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  # ReShade commit the add-on is built against. Bump deliberately: the add-on
+  # API is versioned, and building against a different revision can change
+  # which events and struct layouts exist.
+  RESHADE_REV: aae2b7ec
+
+jobs:
+  windows:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch ReShade headers
+        shell: pwsh
+        run: |
+          $url = "https://codeload.github.com/crosire/reshade/zip/$env:RESHADE_REV"
+          Invoke-WebRequest -Uri $url -OutFile reshade.zip
+          Expand-Archive reshade.zip -DestinationPath reshade_src
+          $dir = Get-ChildItem reshade_src -Directory | Select-Object -First 1
+          Write-Output "RESHADE_DIR=$($dir.FullName)" >> $env:GITHUB_ENV
+
+      - name: Configure
+        shell: pwsh
+        run: |
+          cmake -S . -B build -G "Visual Studio 17 2022" -A x64 `
+            "-DRESHADE_INCLUDE_DIR=$env:RESHADE_DIR/include"
+
+      - name: Build
+        shell: pwsh
+        run: cmake --build build --config Release
+
+      - name: Show artifact hash
+        shell: pwsh
+        run: Get-FileHash build/Release/WuwaUID.addon64 -Algorithm SHA256
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: WuwaUID-addon64
+          path: build/Release/WuwaUID.addon64
+
+      - name: Attach to release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: build/Release/WuwaUID.addon64
