@@ -1,5 +1,7 @@
 # WuwaUID
 
+[![Read in English](https://img.shields.io/badge/lang-English-2ea043?style=flat-square)](README.md) [![阅读中文版](https://img.shields.io/badge/lang-%E7%AE%80%E4%BD%93%E4%B8%AD%E6%96%87-0969da?style=flat-square)](README.zh-CN.md)
+
 [![Written by AI](https://img.shields.io/badge/WRITTEN%20BY-AI%20%E2%80%94%20NO%20HUMAN%20AUTHOR-ff007f?style=for-the-badge)](#-written-entirely-by-ai)
 [![Anti-cheat risk](https://img.shields.io/badge/ANTI--CHEAT%20RISK-UNKNOWN-red?style=for-the-badge)](#-anti-cheat-risk)
 
