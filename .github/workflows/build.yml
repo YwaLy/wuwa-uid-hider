@@ -20,7 +20,14 @@ permissions:
 
 jobs:
   windows:
-    runs-on: windows-latest
+    # Pinned on purpose. windows-latest now points at an image where no
+    # Visual Studio instance answers to the "Visual Studio 17 2022"
+    # generator name, so configure dies at CMakeLists.txt:3 (project) with
+    # "could not find any instance of Visual Studio". windows-2022 still
+    # ships VS 17. Revisit when that image is retired, and switch to a
+    # version-agnostic generator (Ninja inside a vcvars shell) rather than
+    # chasing the newest "Visual Studio NN YYYY" string.
+    runs-on: windows-2022
 
     steps:
       - uses: actions/checkout@v4
