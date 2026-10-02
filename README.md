@@ -1,26 +1,102 @@
 # WuwaUID
 
+[![Written by AI](https://img.shields.io/badge/WRITTEN%20BY-AI%20%E2%80%94%20NO%20HUMAN%20AUTHOR-ff007f?style=for-the-badge)](#-written-entirely-by-ai)
+[![Anti-cheat risk](https://img.shields.io/badge/ANTI--CHEAT%20RISK-UNKNOWN-red?style=for-the-badge)](#-anti-cheat-risk)
+
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](LICENSE)
+[![ReShade API](https://img.shields.io/badge/ReShade%20add--on%20API-20-blueviolet?style=flat-square)](#requirements)
+[![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20DirectX%2012-lightgrey?style=flat-square)](#requirements)
+[![Dependencies](https://img.shields.io/badge/dependencies-none-brightgreen?style=flat-square)](#features)
+
 A ReShade add-on that hides the on-screen player **UID** in **Wuthering Waves**
 (DirectX 12) by suppressing exactly one draw call per frame.
 
-No XXMI, no WWMI, no 3DMigoto, no DXIL patching, no per-version offsets — and no
-hotkeys or configuration. The add-on hides the UID from the first frame and
-otherwise stays out of the way.
+Two builds are published. **`WuwaUID.addon64`** — the one to use — has no
+hotkeys and no configuration: the target draw is compiled into the binary, and
+the UID is hidden from the first frame. **`WuwaUID-debug-hotkeys.addon64`** is
+the diagnostic build that was used to *find* that draw, published so the target
+can be re-derived locally if a game update invalidates it. See
+[Download](#download).
 
 ![preview](docs/preview.jpg)
 
-> ### Disclaimer
+---
+
+> [!CAUTION]
+> ### 🔴 Written entirely by AI
 >
-> Wuthering Waves ships an anti-cheat. This add-on talks only to the official
-> ReShade add-on API — it does not modify game files, read game memory, inject
-> code, or hook any vtable — but ReShade itself injects into the game process,
-> which some games treat as a violation of their terms of service.
+> **Every line of this add-on — the ReShade integration, the draw-call
+> fingerprinting, the bisection tooling, and this document — was written by an
+> AI, not by a person.** No human reviewed the code for correctness or for
+> security. It was verified by running it, and by the status file it writes back
+> (see [Verifying it works](#verifying-it-works)); it was not verified by review.
 >
-> **Whether this is detectable or bannable is unknown. Use at your own risk.**
-> The same question in the WuwaTFR README is answered with a single word:
-> *"Unknown."*
+> Treat it accordingly. Read the source before you run it — the whole add-on is
+> a single 421-line file, and every published binary is reproducible from a
+> tagged CI run.
+
+> [!WARNING]
+> ### 🟠 Anti-cheat risk — unknown
+>
+> Wuthering Waves ships an anti-cheat. **Whether this add-on is detectable or
+> bannable is unknown.** There is no safe answer to give, and nobody has tested
+> it against a ban wave.
+>
+> What *can* be said precisely is what the add-on does and does not do. It talks
+> only to the documented ReShade add-on API: it does **not** modify game files,
+> read game memory, write into the game process, inject code, or hook any
+> vtable. The suppression is a supported return value from a documented
+> callback.
+>
+> But **ReShade itself injects a DLL into the game process**, and some games
+> treat that as a violation of their terms of service regardless of what the DLL
+> then does. The sibling project WuwaTFR answers the same question in a single
+> word: *"Unknown."*
+>
+> **Use at your own risk. Do not use an account you cannot afford to lose.**
+
+## Download
+
+Both builds are attached to every [release](../../releases):
+
+| File | Size | Use it when |
+|---|---|---|
+| **`WuwaUID.addon64`** | ~211 KB | Normal use. Hides the UID; nothing to press. |
+| `WuwaUID-debug-hotkeys.addon64` | ~249 KB | A game update broke the baked-in fingerprint and you want to find the new one. |
+
+> [!NOTE]
+> Install **one** of them, not both — two copies of the add-on would fight over
+> the same draw calls.
+
+v1.0.0 SHA-256:
+
+```
+9FABE6BCAC754966BA83DC9D2654C3C391E31D9DF3FC510CBB69004E4086E654  WuwaUID.addon64
+39899370AA594EBE4499956190B180BDAD58912071A566C1B56FA231FB5069B3  WuwaUID-debug-hotkeys.addon64
+```
+
+CI rebuilds from the tagged commit, so a fresh build may differ in bytes while
+behaving identically. The source is the reference, not the hash.
+
+## Hotkeys
+
+The **release build has no hotkeys at all** — that is the point of it. These
+belong to `WuwaUID-debug-hotkeys.addon64` only:
+
+| Key | Action |
+|---|---|
+| `F7` | Undo the previous narrowing (for when the screen was misread) |
+| `F8` | Rebuild the candidate list, reset the range to `[0, all)` |
+| `F9` | Suppress everything in the left half of the current range |
+| `F10` | UID disappeared → keep the left half |
+| `F11` | UID still visible → keep the right half |
+| `F12` | Clear learned rules (built-in rules survive) |
+
+Full procedure in [How the target was found](#how-the-target-was-found).
 
 ## Features
+
+`WuwaUID.addon64` — the release build:
 
 - **Hides the UID** by preventing its draw command from reaching the command queue
 - **No configuration** — the target draw is compiled into the binary
@@ -28,6 +104,17 @@ otherwise stays out of the way.
 - **No shader patching** — no DXC runtime, no bytecode rewriting, no validation step
 - **Coexists with other ReShade add-ons** (tested alongside WuwaTFR and a DLSS add-on)
 - **Tiny** — a single ~211 KB `.addon64` with no external dependencies
+- **No `user32` import** — it links only `KERNEL32`, so its import table is a
+  quick way to confirm which of the two builds you loaded
+
+`WuwaUID-debug-hotkeys.addon64` — the debug build:
+
+- Everything above, **plus** a live candidate list and the `F7`–`F12` hotkeys
+- **Keeps the built-in rule active at all times**, so the UID stays hidden while
+  you hunt for a replacement
+- **Writes what it learns** to `WuwaUID.ini`, plus a much more detailed
+  `WuwaUID-debug.status.txt`
+- **Links `user32`** for `GetAsyncKeyState` — the only functional difference
 
 ## Requirements
 
@@ -146,11 +233,15 @@ the baked-in `ps=` hash stops matching and the UID comes back. To confirm, look
 at `of which built-in` in the status file: if it sits at `0`, that is what
 happened.
 
-Re-deriving the target requires the bisection tooling described in
-[How the target was found](#how-the-target-was-found). That tool is not shipped
-here on purpose: it is a few hundred lines of throwaway UI, and shipping a
-search tool invites people to mis-click their way into suppressing the wrong
-draw call.
+Re-deriving the target means swapping in **`WuwaUID-debug-hotkeys.addon64`**
+and re-running the bisection described in
+[How the target was found](#how-the-target-was-found). That build is shipped
+precisely for this: the fingerprint is game-version-specific, and the
+alternative is waiting for a stranger to rebuild it.
+
+It is a separate download rather than the default because a tool with a
+"suppress half the screen" key is not something to hand to someone who just
+wants the UID gone. Install one build at a time.
 
 ## Adding rules
 
@@ -179,11 +270,14 @@ git clone --depth 1 https://github.com/crosire/reshade.git
 cmake -S . -B build -G "Visual Studio 17 2022" -A x64 `
       "-DRESHADE_INCLUDE_DIR=$PWD\reshade\include"
 
-# 3. Build
+# 3. Build — both targets by default
 cmake --build build --config Release
 
-# 4. The artifact
-#    build\Release\WuwaUID.addon64
+# 4. The artifacts
+#    build\Release\WuwaUID.addon64                (release, no hotkeys)
+#    build\Release\WuwaUID-debug-hotkeys.addon64  (debug, F7–F12)
+#
+#    Configure with -DBUILD_HOTKEY_DEBUG=OFF to build only the release add-on.
 ```
 
 The add-on is built against ReShade revision `aae2b7ec` (API version 20) and
@@ -236,6 +330,26 @@ ps=5B44B3683F03BAE3  count=156  inst=1  first=0  voff=0  indexed=1
 
 156 indices is 52 triangles, which matches the geometry of a short string of
 digits plus its background.
+
+## Locking in a new target
+
+When the debug build reports `converged on`, the fingerprint has already been
+appended to `WuwaUID.ini` and the UID is hidden from then on — nothing further is
+needed if you are content to keep that file next to the add-on. The release
+build reads the same file.
+
+To fold it into the binary instead, put the line into `kBuiltinRules` in
+[`src/main.cpp`](src/main.cpp) and rebuild:
+
+```cpp
+constexpr DrawKey kBuiltinRules[] = {
+	// ps                     count  inst  first  voff  indexed
+	{ 0x5B44B3683F03BAE3ull,    156,    1,     0,    0,        1 },
+};
+```
+
+The release build never writes `WuwaUID.ini`, and it can never be made to forget
+a built-in rule: `F12` in the debug build clears only what *that* build learned.
 
 ## Credits
 
