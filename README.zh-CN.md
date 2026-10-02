@@ -10,22 +10,28 @@
 - **无热键、无配置、无运行时搜索** —— 装上就生效，加载即隐藏
 - 与 WuwaTFR（反虚化）互不干扰，可以共存
 
-## 二、安装状态
+## 二、安装
 
-已经装好，无需再操作：
+把**一个文件**复制进 ReShade 搜索 add-on 的目录，通常就是游戏主程序所在目录：
 
 ```
-E:\Game\Wuthering Waves Game\Client\Binaries\Win64\
-    ├── WuwaUID.addon64        211,456 B   ← 本 addon
-    ├── WuwaTFR.addon64        253,952 B   ← 反虚化（已有）
-    ├── WuwaTFR.dxcompiler.dll
-    ├── WuwaTFR.ini
-    └── DLSS5-...-Bilibili.addon64
+<游戏目录>\Client\Binaries\Win64\
+    ├── Client-Win64-Shipping.exe
+    ├── dxgi.dll                 ← ReShade
+    └── WuwaUID.addon64          ← 本 addon
 ```
 
-SHA256(WuwaUID.addon64) = `9FABE6BCAC754966BA83DC9D2654C3C391E31D9DF3FC510CBB69004E4086E654`
+也可以直接跑 `install.bat` —— 它会先探测几个常见安装位置，找不到才让你手填。
 
-游戏目录里**没有** `WuwaUID.ini`，这是刻意的 —— 规则已经编译进二进制，不需要外部文件。
+ReShade 从 `*.addon64` 加载 64 位 add-on。装好后看 `ReShade.log`，应该出现：
+
+```
+Searching for add-ons (*.addon, *.addon64) in '...\Binaries\Win64' ...
+Loading add-on from '...\WuwaUID.addon64' ...
+Registered add-on "WuwaUID" v0.0.0.0 using ReShade API version 20.
+```
+
+**不需要放 `.ini`，也不需要额外的 `.dll`** —— 单文件，装上就生效，规则已编译进二进制。
 
 ## 三、目标（已写死）
 
@@ -152,15 +158,26 @@ K0=5B44B3683F03BAE3,156,1,0,0,1
 - **ReShade 版本**：本 addon 按 ReShade API rev `aae2b7ec` 编译，本机是 ReShade 6.8.0，匹配。
 - **性能**：每个 draw 一次哈希查表（带一把 mutex），实测开销远低于一帧预算。
 
-## 十一、重新编译
+## 十一、从源码编译
+
+需要 CMake ≥ 3.20 和 MSVC（VS 2022 或 Build Tools）。
 
 ```powershell
-$cmake = 'C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe'
-# 注意：必须用纯 ASCII 构建目录，中文路径会让 cmake 找不到 reshade.hpp
-Copy-Item src\main.cpp E:\_wuwa_uid_build\src\ -Force
-& $cmake --build E:\_wuwa_uid_build\build --config Release
-# 产物：E:\_wuwa_uid_build\build\Release\WuwaUID.addon64
+# 1. 拉 ReShade 头文件
+git clone --depth 1 https://github.com/crosire/reshade.git
+
+# 2. 配置 —— 头文件路径必须是纯 ASCII，中文路径会让 cmake 找不到 reshade.hpp
+cmake -S . -B build -G "Visual Studio 17 2022" -A x64 `
+      "-DRESHADE_INCLUDE_DIR=$PWD\reshade\include"
+
+# 3. 编译
+cmake --build build --config Release
+
+# 4. 产物
+#    build\Release\WuwaUID.addon64
 ```
+
+本 addon 按 ReShade rev `aae2b7ec`（API version 20）编译，实测环境是 ReShade 6.8.0。
 
 ---
 

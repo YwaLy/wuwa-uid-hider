@@ -13,6 +13,11 @@ env:
   # which events and struct layouts exist.
   RESHADE_REV: aae2b7ec
 
+# Required so the tag job may create/update a release. The default token is
+# read-only, which makes softprops/action-gh-release fail with HTTP 403.
+permissions:
+  contents: write
+
 jobs:
   windows:
     runs-on: windows-latest

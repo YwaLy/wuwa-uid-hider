@@ -42,11 +42,18 @@ Copy **one file** into the directory where ReShade looks for add-ons. That is
 usually the same directory as the game executable:
 
 ```
-E:\Game\Wuthering Waves Game\Client\Binaries\Win64\
+<game>\Client\Binaries\Win64\
     ├── Client-Win64-Shipping.exe
     ├── dxgi.dll                 ← ReShade
-    ├── WuwaUID.addon64          ← this add-on
-    └── ... (other add-ons)
+    └── WuwaUID.addon64          ← this add-on
+```
+
+Or run `install.bat`, which probes the usual Steam / Epic / standalone layouts
+first and only asks for a path if none matches. You can also pass the directory
+explicitly:
+
+```
+install.bat "D:\Wuthering Waves\Wuthering Waves Game\Client\Binaries\Win64"
 ```
 
 ReShade loads 64-bit add-ons from files ending in `.addon64`. Check
