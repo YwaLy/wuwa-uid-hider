@@ -22,7 +22,7 @@ jobs:
   windows:
     # Pinned on purpose. windows-latest now points at an image where no
     # Visual Studio instance answers to the "Visual Studio 17 2022"
-    # generator name, so configure dies at CMakeLists.txt:3 (project) with
+    # generator name, so configure dies at the project() line with
     # "could not find any instance of Visual Studio". windows-2022 still
     # ships VS 17. Revisit when that image is retired, and switch to a
     # version-agnostic generator (Ninja inside a vcvars shell) rather than
@@ -51,26 +51,17 @@ jobs:
         shell: pwsh
         run: cmake --build build --config Release
 
-      - name: Show artifact hashes
+      - name: Show artifact hash
         shell: pwsh
-        run: |
-          Get-FileHash build/Release/WuwaUID.addon64 -Algorithm SHA256
-          Get-FileHash build/Release/WuwaUID-debug-hotkeys.addon64 -Algorithm SHA256
+        run: Get-FileHash build/Release/WuwaUID.addon64 -Algorithm SHA256
 
-      # Both builds ship: the plain add-on for normal use, and the hotkey
-      # debug build for re-deriving the target after a game update breaks the
-      # baked-in fingerprint.
       - uses: actions/upload-artifact@v4
         with:
           name: WuwaUID-addon64
-          path: |
-            build/Release/WuwaUID.addon64
-            build/Release/WuwaUID-debug-hotkeys.addon64
+          path: build/Release/WuwaUID.addon64
 
       - name: Attach to release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: |
-            build/Release/WuwaUID.addon64
-            build/Release/WuwaUID-debug-hotkeys.addon64
+          files: build/Release/WuwaUID.addon64

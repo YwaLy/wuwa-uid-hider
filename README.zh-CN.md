@@ -6,8 +6,8 @@
 [![反作弊风险](https://img.shields.io/badge/%E5%8F%8D%E4%BD%9C%E5%BC%8A%E9%A3%8E%E9%99%A9-%E6%9C%AA%E7%9F%A5-red?style=for-the-badge)](#-反作弊风险未知)
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](LICENSE)
-[![ReShade API](https://img.shields.io/badge/ReShade%20add--on%20API-20-blueviolet?style=flat-square)](#二安装)
-[![平台](https://img.shields.io/badge/%E5%B9%B3%E5%8F%B0-Windows%20%7C%20DirectX%2012-lightgrey?style=flat-square)](#二安装)
+[![ReShade API](https://img.shields.io/badge/ReShade%20add--on%20API-20-blueviolet?style=flat-square)](#四安装)
+[![平台](https://img.shields.io/badge/%E5%B9%B3%E5%8F%B0-Windows%20%7C%20DirectX%2012-lightgrey?style=flat-square)](#四安装)
 [![依赖](https://img.shields.io/badge/%E4%BE%9D%E8%B5%96-%E6%97%A0-brightgreen?style=flat-square)](#一这是什么)
 
 ---
@@ -15,12 +15,12 @@
 > [!CAUTION]
 > ### 🔴 完全由 AI 编写
 >
-> **本项目的每一行代码 —— ReShade 集成、绘制指纹、二分定位工具、以及这份文档本身 ——
+> **本项目的每一行代码 —— ReShade 集成、绘制指纹、运行时学习逻辑、以及这份文档本身 ——
 > 都由 AI 编写，没有任何人类作者。** 没有人对代码做过正确性或安全性审查。
 > 它只被「跑起来验证」过：正式版确实隐藏了 UID，`status` 文件里有对应数据
-> （见 [第四节](#四验证记录)）；但它**没有**经过人工审阅。
+> （见 [第五节](#五验证记录)）；但它**没有**经过人工审阅。
 >
-> 请据此评估是否使用。运行前请自己读源码 —— 整个 add-on 就是一个 421 行的文件，
+> 请据此评估是否使用。运行前请自己读源码 —— 整个 add-on 就是一个 867 行的文件，
 > 每个发布产物都能由带 tag 的 CI 重新构建。
 
 > [!WARNING]
@@ -43,26 +43,69 @@
 
 一个纯 ReShade add-on。它在 **DX12** 下通过「让某一次绘制命令不执行」来隐藏屏幕上的 UID。
 
-本项目发布**两个版本**：
+从 **v2.0.0** 起，目标不再写死在二进制里，而是**运行时学出来的**。add-on 会观察游戏
+绘制 UI 文本的各批绘制，把「几乎一直在屏幕上」的那一批隐藏掉 —— UID 就是这种，
+按钮不是。因此游戏更新后**不需要重新测量指纹**，也**没有配置文件要改**、**没有热键**。
+原理见 [第六节](#六工作原理)。
 
-| 文件 | 大小 | 用途 |
-|---|---|---|
-| **`WuwaUID.addon64`** | ~211 KB | 正式版。装了就生效，无需任何操作。 |
-| `WuwaUID-debug-hotkeys.addon64` | ~249 KB | 调试版。带 `F7`–`F12` 热键，用于游戏更新后重新定位目标。 |
+![preview](docs/preview.jpg)
+
+## 二、v1.0.0 的已知问题
+
+**如果你还在用 v1.0.0，请先读这一节。** v1 能正确隐藏 UID，也从未「失灵」过，
+但它有一个缺陷；这个缺陷是**用户报告**出来的，不是测试出来的：
+
+> [!IMPORTANT]
+> ### ⚪ 白框：按钮变成空白
+>
+> v1 在隐藏 UID 的同时，**把按钮上的文字也一起隐藏了。** 按钮的圆角底板照常绘制，
+> 但叠在上面的文字没有画出来 —— 于是凡是游戏在按钮上绘制文字的界面，按钮都会变成
+> **空白的白色色块**。最典型的是挑战结算界面上那两个领取按钮。
+>
+> 其余一切正常：UID 稳定隐藏，其他 UI 元素渲染如常，也没有崩溃。
+
+**为什么会这样。** v1 匹配的是一条**手工测量一次、然后写死进二进制**的指纹：
+
+```
+ps=5B44B3683F03BAE3  count=156  inst=1  first=0  voff=0  indexed=1
+```
+
+外加第五个字段：索引缓冲偏移 `ibo`。这些字段里，只有 `ps`、`count` 和 `ibo`
+在不同批次之间会变 —— 其余对本游戏而言是常量。如果 UID 和按钮文字是从
+**同一个 UI 文本池**里分配的，它们就共享同一个 `ibo`，于是规则匹配到的是
+**整个池**：UID 被隐藏，池里的每个按钮文字也一起被隐藏。
+
+**v2.0.0 已修复。** v2 不再匹配任何指纹。它按「在屏幕上出现的比例」给候选批次排序，
+只抑制占主导的那几个。UID 几乎每一帧都在画；按钮文字只在其所在界面打开时才画。
+实测一次会话：UID 批次占目标绘制总数的 **96.9%**，第二名只有 **2.7%** ——
+这就是按钮不再被误伤的原因。
 
 > [!NOTE]
-> **一次只装一个。** 两个版本同时存在会争抢同一批 draw。
+> v1.0.0 仍保留在 [它的 release](../../releases/tag/v1.0.0) 和 `v1.0.0` tag 中，
+> 供查阅，也供想研究「当初那条指纹是怎么测出来的」的人参考。**不建议继续使用。**
 
-正式版（`WuwaUID.addon64`）的特性：
+## 三、下载
 
-- 不需要 XXMI / WWMI / 3DMigoto
-- 不改 shader 字节码、不读游戏内存、不注入进程、不做 vtable hook
-- 只用 ReShade 官方的 add-on API 事件（`init_pipeline` / `bind_pipeline` / `draw` / `draw_indexed` / `present`）
-- **无热键、无配置、无运行时搜索** —— 装上就生效，加载即隐藏
-- 与 WuwaTFR（反虚化）互不干扰，可以共存
-- **不导入 `user32`** —— 正式版只链接 `KERNEL32`，看一眼导入表就能确认装的是哪一版
+每个 [release](../../releases) 只附带一个文件：
 
-## 二、安装
+| 文件 | 大小 | 说明 |
+|---|---|---|
+| **`WuwaUID.addon64`** | ~225 KB | 正式版。装上即可，无需任何操作。 |
+
+v1.0.0 的 release 里另有一个 `WuwaUID-debug-hotkeys.addon64`（二分定位工具）。
+**它已经不再需要、也不再发布** —— v2 不需要人工二分。详见
+[第二节](#二v100-的已知问题)。
+
+v2.0.0 的 SHA-256：
+
+```
+2990199780AAB5BDDD41CA9C625CD07D2E3653EDFC5FFAAB50DDAF577A802910  WuwaUID.addon64
+```
+
+CI 会从带 tag 的提交重新构建，因此新构建的字节可能不同但行为一致。
+**以源码为准，而不是以哈希为准。**
+
+## 四、安装
 
 把**一个文件**复制进 ReShade 搜索 add-on 的目录，通常就是游戏主程序所在目录：
 
@@ -70,12 +113,18 @@
 <游戏目录>\Client\Binaries\Win64\
     ├── Client-Win64-Shipping.exe
     ├── dxgi.dll                 ← ReShade
-    └── WuwaUID.addon64          ← 本 addon
+    └── WuwaUID.addon64          ← 本 add-on
 ```
 
-也可以直接跑 `install.bat` —— 它会先探测几个常见安装位置，找不到才让你手填。
+也可以直接运行 `install.bat`：它会先探测常见的 Steam / Epic / 独立安装布局，
+只有都匹配不上时才询问路径。也可以显式指定目录：
 
-ReShade 从 `*.addon64` 加载 64 位 add-on。装好后看 `ReShade.log`，应该出现：
+```
+install.bat "D:\Wuthering Waves\Wuthering Waves Game\Client\Binaries\Win64"
+```
+
+ReShade 会加载以 `.addon64` 结尾的 64 位 add-on。装好后看一眼 `ReShade.log`，
+应该有这几行：
 
 ```
 Searching for add-ons (*.addon, *.addon64) in '...\Binaries\Win64' ...
@@ -83,119 +132,137 @@ Loading add-on from '...\WuwaUID.addon64' ...
 Registered add-on "WuwaUID" v0.0.0.0 using ReShade API version 20.
 ```
 
-**不需要放 `.ini`，也不需要额外的 `.dll`** —— 单文件，装上就生效，规则已编译进二进制。
+**不需要放 `.ini`，也不需要保留任何 `.dll`。**
 
-## 三、目标（已写死）
+## 五、验证记录
+
+add-on 会在自己旁边写一个 **`WuwaUID.status.txt`**，大约每秒刷新两次：
+
+```
+WuwaUID v2 live status
+======================
+mode                : automatic (target learned at runtime, no hotkeys)
+frames              : 12420
+draws seen          : 6417088
+draws suppressed    : 657
+  of which from .ini: 0
+manual rules        : 0
+
+--- target learning ---
+target              : ps=5B44B3683F03BAE3 count=156
+draws on target     : 5554
+state               : locked on
+suppressing         : inst=1 first=0 voff=0 indexed=1 ibo=14403584
+
+candidates by decayed share (time constant 64 target draws):
+  [0] inst=1 first=0 voff=0 indexed=1 ibo=14403584   share 100%  draws 3456  seen 2101..5554   <-- suppressed
+  [1] inst=1 first=0 voff=0 indexed=1 ibo=24367104   share   0%  draws 1525  seen  900..2100
+
+--- diagnostics ---
+pipelines seen      : 5189 (with pixel shader: 2878)
+pipeline binds      : 2881051 (PS hash resolved: 2838984)
+command lists       : 72
+draws w/o bound PSO : 0
+```
+
+| 看到什么 | 说明 |
+|---|---|
+| `state : locked on` | 已选定目标并正在抑制 |
+| `state : warming up` | 目标绘制次数还太少，暂不判断 —— 刚进游戏的头几秒属正常 |
+| `state : no candidate yet` | 当前没有批次过线，UID 处于可见状态 |
+| 被抑制那行的 `share 100%` | 选中的批次几乎每帧都在屏幕上 —— UID 就该是这样 |
+| `draws w/o bound PSO` 不为 `0` | ReShade 没有上报管线绑定，请开 issue |
+| `with pixel shader` 为 `0` | 装错版本了 |
+
+**头几秒的可见是这套方案的代价。** add-on 在看到足够多的绘制之前不会抑制任何东西，
+所以刚进游戏或刚换场景时，UID 会短暂露出来：
+
+| 场景 | 隐藏所需时间 |
+|---|---|
+| 只有单一文本批次主导（例如副本内） | 约 0.7 秒 |
+| 同时有多个文本批次在画（例如大世界） | 约 2.5 秒 |
+
+## 六、工作原理
+
+全部通过 ReShade 官方文档里的 add-on API 完成。
+
+1. **给管线上索引。** 每个新 PSO 都会触发 `addon_event::init_pipeline`。
+   像素着色器字节码用 FNV-1a 哈希后存进 `PSO 句柄 → 哈希` 表。
+
+2. **跟踪状态。** DX12 的绘制命令不携带状态，必须自己跟踪：
+   `addon_event::bind_pipeline` 记录每个命令列表绑定了哪个 PSO，
+   `bind_index_buffer` 记录索引缓冲偏移，`reset_command_list` 清空两者。
+
+   > **唯一一处反直觉的地方。** 这里**不能**按 `pipeline_stage` 过滤。
+   > DX12 一次调用就绑定整个 PSO，而 ReShade 并不保证给出 `pixel_shader` 位；
+   > 一旦用这个掩码过滤，所有图形管线绑定都会被静默丢弃，每条绘制看起来都
+   > 「没有像素着色器」。**这正是当初把第一版搞坏的那个 bug。**
+
+3. **取指纹。** 每次 `draw` / `draw_indexed` 得到
+
+   ```
+   DrawKey { PS 哈希, 索引数, 实例数, 起始索引, 基准顶点, 是否索引绘制, ibo }
+   ```
+
+4. **选出目标。** 只有两个字段被假定为常量 —— 像素着色器哈希和索引数。其余全靠学习：
+
+   - 每个匹配这两个字段的批次称为一个**候选**，用其余字段标识。
+   - 每个候选带一个**指数加权**的绘制计数，时间常数 64 次目标绘制。
+     候选的**占比** = 它的权重 ÷ 所有候选权重之和。
+   - 占比过线的候选会被抑制。门槛有两道，用哪一道决定了响应速度：
+
+     | 何时 | 门槛 | 为什么 |
+     |---|---|---|
+     | 从第 24 次目标绘制起 | **占比 85%** | 只有「几乎独占全部绘制」的批次才过得去 —— 副本场景里那种唯一文本批次正是如此。用不到一秒给出答案是值得的：样本少时偶尔会被假象骗过，但错误答案会在一个时间常数内自己衰减掉。 |
+     | 第 90 次目标绘制之后 | **占比 38%** | 用于文本被拆到多个批次里的场景。实测：在大世界里 UID 占 43%，第二名占 27%。 |
+
+   - 同时最多抑制 **2** 个批次。允许不止一个是刻意的 —— 在文本被拆分的场景里，
+     如果坚持只认一个赢家，UID 会因为「没有任何一个批次占主导」而存活下来。
+     这个上限的作用是防止它变成「把整个 UI 都抑制掉」。
+
+   这里**完全不需要「帧」这个概念**。用帧来计数听起来自然，但是错的：
+   present 回调每次真实帧的触发次数并不固定（两个会话里分别实测到 2.9 倍和 5.7 倍），
+   于是一个**每帧都画**的批次曾被算成「占 17% 的帧」。所以占比是拿候选自己的绘制数
+   除以目标的绘制总数 —— 这个分母不会漂。
+
+5. **抑制。** 回调返回 `true`。ReShade 官方文档原文：
+
+   > *To prevent this command from being executed, return `true`, otherwise
+   > return `false`.*
+
+   这条绘制命令从未进入命令队列。这是官方支持的 API 行为，不是 hack。
+
+## 七、可调参数
+
+第六节第 4 步里的门槛是 [`src/main.cpp`](src/main.cpp) 顶部的 `constexpr`，就是留给改的：
 
 ```cpp
-constexpr DrawKey kBuiltinRules[] = {
-	// ps                     count  inst  first  voff  indexed
-	{ 0x5B44B3683F03BAE3ull,    156,    1,     0,    0,        1 },
-};
+constexpr uint64_t kEmaShift         = 6;     // 时间常数 = 2^6 = 64 次目标绘制
+constexpr uint64_t kEarlyDraws       = 24;    // 最早允许开始判断的绘制数
+constexpr uint64_t kEarlyCoveragePct = 85;    // 早期门槛
+constexpr uint64_t kLearnWarmupDraws = 90;    // 超过此数后启用常规门槛
+constexpr uint64_t kLearnCoveragePct = 38;    // 常规门槛
+constexpr size_t   kMaxTargets       = 2;     // 同时最多抑制几个批次
 ```
 
-即 `ps=5B44B3683F03BAE3 count=156 inst=1 first=0 voff=0 indexed=1` —— 156 个索引
-（52 个三角形）正是 UID 那串数字的几何量。这条规则 2026-10-02 由二分法实测锁定。
+调低 `kEarlyDraws` 或 `kEarlyCoveragePct` 会让 UID 消失得更快，同时更容易在最初
+短暂地抑制错一个批次；调高 `kLearnCoveragePct` 会让判断更保守。
+status 文件就是反馈回路 —— 它实时打印每个候选的占比。
 
-它在 `DllMain` 里于 `load_rules()` **之后**无条件追加，所以：
+## 八、什么情况下会失效
 
-- `WuwaUID.ini` 缺失 → 照常隐藏
-- `WuwaUID.ini` 内容过期 → 内置规则仍然生效
-- 手改 `.ini` 只能**追加**规则，删不掉内置这条
+v2 没有写死的指纹，所以「游戏更新打乱 shader 或重建 UI 文本池」不会让它失效 ——
+最坏情况只是收敛慢几秒，status 里的 `ps=` 值会变。
 
-## 四、验证记录
+真正会让它失效的是**问题结构本身的改变**，而不是其中常量的改变：如果游戏不再把 UID
+作为独立的一批绘制，或者开始把按钮和 UID 画在同一批里，那么再怎么排占比也无法区分
+两者。**这就是本方案已知的结构性弱点** —— 它依赖「UID 与按钮是可分离的批次」。
+如果白框症状重新出现，那就是这种情况；请附上 status 文件开 issue。
 
-**2026-10-03 00:11 实测成功。** 游戏内截图确认 UID 不再绘制，同时 `WuwaUID.status.txt`：
+## 九、附加规则
 
-```
-mode                : automatic (target baked in, no hotkeys)
-frames              : 8310
-draws seen          : 6724048
-draws suppressed    : 1832
-  of which built-in : 1832
-active rules        : 1
-
---- diagnostics ---
-pipelines seen      : 4391 (with pixel shader: 2324)
-pipeline binds      : 2300225 (PS hash resolved: 2278362)
-command lists       : 46
-draws w/o bound PSO : 0
-
-active rules:
-  [0] ps=5B44B3683F03BAE3 count=156 inst=1 first=0 voff=0 indexed=1   (built-in)
-```
-
-值得记一笔的是 `draws suppressed` 和 `of which built-in` **完全相等** —— 当时游戏目录里
-根本没有 `WuwaUID.ini`，所以这 1832 次抑制 100% 来自编译进二进制的规则。这既证明了
-写死生效，也证明了隐藏不再依赖任何外部文件。
-
-另外 `1832 / 8310 ≈ 0.22 次每帧`，说明 UI 层并非每帧重绘那串数字（很可能是按 UI 刷新
-节奏或仅在数值变化时重画），属于正常现象，不是漏抑制。
-
-## 五、怎么看它是否在工作
-
-同一个目录下的 **`WuwaUID.status.txt`**（约每 30 帧刷新一次）：
-
-```
-WuwaUID live status
-===================
-mode                : automatic (target baked in, no hotkeys)
-frames              : 31273
-draws seen          : 30784980
-draws suppressed    : 11575
-  of which built-in : 11575
-active rules        : 1
-
---- diagnostics ---
-pipelines seen      : 3781 (with pixel shader: 1779)
-pipeline binds      : 9966470 (PS hash resolved: 9897373)
-command lists       : 45
-draws w/o bound PSO : 0
-
-active rules:
-  [0] ps=5B44B3683F03BAE3 count=156 inst=1 first=0 voff=0 indexed=1   (built-in)
-```
-
-读数要点：
-
-| 现象 | 含义 |
-|---|---|
-| `of which built-in` 持续增长 | 规则正在命中，UID 应该看不到 |
-| 一直是 `0`，UID 仍在 | PS 哈希对不上了（见第五节） |
-| `draws w/o bound PSO` 不为 0 | ReShade 没上报绑定，属于异常，把文件发我 |
-| `with pixel shader` 是 0 | 同上传错了版本 |
-
-## 六、如果 UID 又出现了
-
-唯一的原因是**游戏更新动了着色器**，那个 `ps=` 哈希不再匹配。此时：
-
-1. 看 `WuwaUID.status.txt` 的 `of which built-in` —— 停在 0 就是确认了这一点；
-2. 把调试版 `WuwaUID-debug-hotkeys.addon64` 换上去，用第十二节的热键重新二分定位（细节见附录）；
-3. 定位完成后指纹会自动写进 `WuwaUID.ini`，立刻生效；想固化进二进制则填进 `kBuiltinRules` 重新编译。
-
-哈希是「像素着色器字节码的 FNV-1a」，游戏换版本、换画质档、驱动重编着色器都可能让它变。
-
-> [!NOTE]
-> **一次只装一个。** 换版本时先把正式版 `WuwaUID.addon64` 移出目录，再放入调试版 ——
-> 两个版本共存会争抢同一批 draw。
-
-## 七、工作原理
-
-1. **建索引**：`init_pipeline` 事件对每个新建的 PSO 触发。取出它的像素着色器字节码，用 FNV-1a 算哈希，存进 `PSO句柄 → PS哈希` 表。
-2. **跟状态**：DX12 的绘制命令本身不带状态，得自己跟。`bind_pipeline` 记下「这个命令列表当前绑的是哪个 PSO」，`reset_command_list` 清掉。
-   > ⚠️ 这里**不能**按 `pipeline_stage` 过滤。DX12 一次绑定整个 PSO，ReShade 上报时不保证带 `pixel_shader` 位，一过滤就把所有图形绑定丢掉了（这是第一版失败的原因）。
-3. **指纹**：每次 `draw_indexed` / `draw` 组合出
-   `DrawKey{ PS哈希, 索引数, 实例数, 起始索引, baseVertex, 是否索引绘制 }`
-4. **判断**：指纹落在 `g_blocked` 里就抑制。列表只有个位数条目，线性扫描比哈希表更快。
-5. **抑制**：回调**返回 `true`**。ReShade 官方文档原文：
-
-   > To prevent this command from being executed, return `true`, otherwise return `false`.
-
-   那次绘制就真的不进入命令队列 —— 这是 API 支持的行为，不是 hack。
-
-## 八、加规则
-
-`WuwaUID.ini` 可选，格式 `ps,count,inst,first,voff,indexed`：
+可选：add-on 旁边的 `WuwaUID.ini` 可以**追加**固定规则，用于无条件抑制某些批次。
+它只在加载时读一次，且**永远不会被写入** —— 删掉它不改变任何行为。
 
 ```ini
 [WuwaUID]
@@ -203,90 +270,88 @@ Blocked=1
 K0=5B44B3683F03BAE3,156,1,0,0,1
 ```
 
-要**永久**加规则就写进 `kBuiltinRules` 重新编译 —— `.ini` 只是给你临时试的。
+值的格式是 `ps,count,inst,first,voff,indexed`。注意这些是**精确指纹**，
+用这种方式钉死的规则在游戏改变内存布局后就不再匹配 —— 它是逃生通道，
+不是学习逻辑的替代品。
 
-## 九、卸载
-
-删掉 `WuwaUID.addon64`（和可选的 `WuwaUID.status.txt`）即可，不留任何痕迹。
-
-## 十、风险
-
-- **反作弊**：鸣潮有反作弊系统。本 addon 走的是 ReShade 官方 API，不改游戏文件、不读游戏内存，但 ReShade 本身注入游戏进程这件事在部分游戏里是被判定为违规的。WuwaTFR 作者在 README 里对「会不会封号」的回答就是 **"Unknown."**。用不用自己判断，风险自负。
-- **ReShade 版本**：本 addon 按 ReShade API rev `aae2b7ec` 编译，本机是 ReShade 6.8.0，匹配。
-- **性能**：每个 draw 一次哈希查表（带一把 mutex），实测开销远低于一帧预算。
-
-## 十一、从源码编译
+## 十、从源码构建
 
 需要 CMake ≥ 3.20 和 MSVC（VS 2022 或 Build Tools）。
 
 ```powershell
-# 1. 拉 ReShade 头文件
+# 1. 取 ReShade 头文件（任意你想针对的版本）
 git clone --depth 1 https://github.com/crosire/reshade.git
 
-# 2. 配置 —— 头文件路径必须是纯 ASCII，中文路径会让 cmake 找不到 reshade.hpp
+# 2. 配置 —— include 路径必须是 ASCII，非 ASCII 路径会导致头文件查找失败
 cmake -S . -B build -G "Visual Studio 17 2022" -A x64 `
       "-DRESHADE_INCLUDE_DIR=$PWD\reshade\include"
 
-# 3. 编译（默认同时编两个 target）
+# 3. 构建
 cmake --build build --config Release
 
 # 4. 产物
-#    build\Release\WuwaUID.addon64                正式版（无热键）
-#    build\Release\WuwaUID-debug-hotkeys.addon64  调试版（F7–F12）
-#
-#    配置时加 -DBUILD_HOTKEY_DEBUG=OFF 可只编正式版
+#    build\Release\WuwaUID.addon64
 ```
 
-本 addon 按 ReShade rev `aae2b7ec`（API version 20）编译，实测环境是 ReShade 6.8.0。
+本 add-on 针对 ReShade 修订版 `aae2b7ec`（API 版本 20）构建，在 ReShade 6.8.0 上测试。
 
-## 十二、热键（仅调试版）
+## 十一、卸载
 
-**正式版 `WuwaUID.addon64` 没有任何热键** —— 这正是它的设计目标。
-下表只适用于 **`WuwaUID-debug-hotkeys.addon64`**：
+删掉 `WuwaUID.addon64`（以及可选的 `WuwaUID.status.txt`）即可。
+它不碰任何别的东西 —— 没有注册表项、没有其他目录里的文件、游戏目录里不留痕迹。
 
-| 键 | 作用 |
+## 十二、目标是怎么找到的
+
+这一节记录 v1 那条指纹当初是怎么测出来的。**v2 完全不需要这些** ——
+保留它是因为方法本身有记录价值，而且 `v1.0.0` tag 里仍然带着那个工具。
+
+目标是通过**二分游戏的绘制调用**逐个缩小范围找到的。候选列表有数千条，
+逐条试不现实；每次砍一半则只需 `log2(n)` 步。
+
+| 键 | 动作 |
 |---|---|
-| `F7` | 撤销上一轮（看走眼时退回） |
-| `F8` | 重建候选表，区间重置成 `[0, 全部)` |
-| `F9` | 试探左半区 —— 抑制当前区间左半的所有 draw |
-| `F10` | UID 消失了 → 保留左半区 |
-| `F11` | UID 还在 → 保留右半区 |
-| `F12` | 清空学到的规则（内置规则保留） |
+| `F7` | 撤销上一次收窄（屏幕看错了时用） |
+| `F8` | 重建候选表，范围重置为 `[0, 全部)` |
+| `F9` | 抑制当前范围的左半部分 |
+| `F10` | UID 消失了 → 保留左半 |
+| `F11` | UID 还在 → 保留右半 |
+| `F12` | 清除已学习规则（内置规则不受影响） |
 
-调试版与正式版的其它差异：
+当范围收敛到单条候选时会自动提交。它用 `log2(2115) ≈ 12` 轮收敛，
+而记录的撤销深度恰好是 `12` —— 每一轮都答对了。
 
-- 调试版**始终保留内置规则**，所以你一边找新目标，UID 一边还是隐藏的
-- 调试版会把学到的东西**写进** `WuwaUID.ini`，并输出更详细的 `WuwaUID-debug.status.txt`
-  （约每秒 4 次刷新，含候选表、二分区间、撤销深度、筛选拒绝统计）
-- 调试版链接 `user32`（`GetAsyncKeyState` 是唯一用途）
+**两个值得记下来的失误：**
 
-定位完成后，指纹会自动写进 `WuwaUID.ini`，之后一直有效；想固化进二进制就把它填进
-`kBuiltinRules` 重新编译（见 [第三节](#三目标已写死)）。
+1. **第一次收敛到了错误的目标** —— `count=3`，一个三角形，不可能是 UID。
+   12 轮里有一轮被看错了，而当时没有撤销功能。`F7` 就是为此而加的。
 
----
+2. **每帧绘制数上限设得太紧。** 最初阈值 2.5 砍掉了太多东西；一串多字形 HUD 文本
+   可能是**每个字符一次绘制**，所以合理上限要高得多（实际用了 32）。
 
-## 附录：这个目标当初是怎么找到的
+**候选筛选条件**，供想重做这件事的人参考：出现 ≥ 3 次、`inst == 1`、
+`count ∈ (0, 200000]`、每帧绘制 ≤ 32 次，按 `|每帧次数 − 1|` 升序排列 ——
+一个每帧恰好绘制一次的 HUD 元素会自然排到最前面。
 
-定位发生在 2026-10-02，用的是**带热键的调试版**。它的源码在
-[`hotkey-debug/src/main.cpp`](hotkey-debug/src/main.cpp)，二进制随每个 release 一起发布。
-方法留档，方便日后重做：
+它测出来的指纹，也就是 v1 写死进去的那条：
 
-**二分法**：候选表有两三千项，逐个试不现实。
+```
+ps=5B44B3683F03BAE3  count=156  inst=1  first=0  voff=0  indexed=1
+```
 
-| 键 | 作用 |
-|---|---|
-| F7 | 撤销上一轮（看走眼时退回） |
-| F8 | 重建候选表，区间重置成 `[0, 全部)` |
-| F9 | 试探左半区 —— 抑制当前区间左半的所有 draw |
-| F10 | UID 消失了 → 保留左半区 |
-| F11 | UID 还在 → 保留右半区 |
-| F12 | 清空学到的规则（内置规则保留） |
+156 个索引是 52 个三角形，正好对上一小串数字加其底板的几何量。
 
-缩到只剩 1 个候选时自动锁定。`log2(2115) ≈ 12` 轮收敛，实测 `undo depth = 12`，说明每轮都答对了。
+**而二分法真正搞错的地方**记录在 [第二节](#二v100-的已知问题)：
+测量本身是对的，但那条指纹描述的是一**池**批次，而不是 UID 本身，
+而整个流程没有任何环节会暴露这一点。**找到目标从来不是难点 ——
+把它和用同样方式绘制的东西区分开才是。**
 
-**两次踩过的坑**：
+## Credits
 
-1. **第一次收敛到了错误目标**（`count=3`，只有一个三角形，不可能是 UID）。原因是 12 轮里看错了一轮，而当时没有撤销功能 —— 所以后来加了 F7。
-2. **候选筛选的每帧上限不能卡太死**。最初设 2.5，把 UID 之外的很多东西误杀了；放宽到 32 才合理，因为多字形 HUD 字符串可能是**每字符一次 draw**。
+- [ReShade](https://reshade.me/) by crosire —— 本项目的 API 基础
+- [WuwaTFR](https://github.com/wuwatfr/wuthering-waves-transparency-filter-remover)
+  —— 同一款游戏的同类 add-on；在梳理 ReShade DX12 事件模型时读过它的源码，
+  本项目的安装布局也沿用了它
 
-**候选筛选条件**（供重做时参考）：出现 ≥3 次、`inst == 1`、`count ∈ (0, 200000]`、每帧次数 ≤ 32。排序键用 `|per_frame − 1|` 升序 —— UID 这类整帧只画一次的东西天然排在前面。
+## License
+
+[MIT](LICENSE)。本文档的英文版见 [README.md](README.md)。
