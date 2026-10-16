@@ -187,7 +187,7 @@ bisection. See [Known issues in v1.0.0](#known-issues-in-v100).
 v2.1.0 SHA-256:
 
 ```
-0911C47B20037B18B51DD4AD624A5053494FD4870FD680973CD02283FF771592  WuwaUID.addon64
+C9A0599214983D3074F29894F0E91EBD4144DCA248B667185963F665D9C8B725  WuwaUID.addon64
 ```
 
 CI rebuilds from the tagged commit, so a fresh build may differ in bytes while
