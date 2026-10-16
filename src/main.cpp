@@ -1,120 +1,102 @@
 // ---------------------------------------------------------------------------
-// WuwaUID v2 — Wuthering Waves UID hider, self-calibrating
+// WuwaUID v4 — Wuthering Waves UID hider, self-calibrating
 //
 // A ReShade add-on for DirectX 12 that hides the on-screen player UID by
 // suppressing the draw commands that render it.
 //
-// WHAT CHANGED FROM v1
+// WHAT v3 DID AND WHY IT STILL LEAKED THE UID
 //
-// v1 baked one fingerprint into the binary:
+// v3 learned the UID batch by measuring the DUTY CYCLE of every batch that
+// matched {pixel shader, index count}:
 //
-//     { ps 0x5B44B3683F03BAE3, count 156, first 0, voff 0, indexed 1, ibo 1747200 }
+//     duty = draws / (lastFrame - firstFrame + 1)
 //
-// The `ibo` field is the offset of the UID's slice inside the game's shared UI
-// index pool. It was measured once, on one game build, and it does not hold:
-// three separate sessions measured 1747200, 94976 and 16765184. The offset is
-// not a machine property and not even a per-launch allocation address — it is
-// wherever the current build happens to place the UID inside a pool it fills
-// at runtime. There is nothing stable to bake, so v1's rule went stale and the
-// UID came back.
+// and suppressed every batch that reached 85% duty over at least 120 frames
+// with at least 300 draws. The threshold was calibrated on one long session
+// that happened to report 98% / 91% / 87% for its resident batches. A later
+// session says the ruler does not travel:
 //
-// v2 does not bake a fingerprint. It finds the UID itself, every session, by
-// watching rather than assuming.
+//     frames 15390, draws seen 5316909, draws on target 5445,
+//     draws suppressed 0, state "no candidate yet"
 //
-// WHY A FILTER IS NEEDED AT ALL
+//     [0] ibo=5646848   duty  58%  draws 2505  span 11094..15386
+//     [1] ibo=14920192 duty  23%  draws  960  span  4788..8948
+//     [2] ibo=26119936 duty  30%  draws  872  span  1680..4538
+//     [3] ibo=22969856 duty 100%  draws  232  span 14360..14591
 //
-// The game renders all of its interface text with one pixel shader, and most
-// individual strings come out as the same index count — the UID costs 156
-// indices (26 quads, i.e. 26 characters). A fingerprint of {shader, index
-// count} therefore also matches unrelated batches: the two reward buttons on
-// the domain clear screen are drawn with the same shader and the same 156
-// indices, and matching them leaves both buttons blank white. That is the bug
-// this rewrite exists to close.
+// Three separate faults are visible in that table, and each one alone is
+// enough to leave the UID on screen:
 //
-// WHAT REPLACES THE BAKED OFFSET
+//   1. THE DENOMINATOR IS FRAMES, AND UI TEXT IS NOT REDRAWN EVERY FRAME.
+//      5445 target draws across 15390 presented frames is 0.35 draws/frame:
+//      the game redraws its interface text roughly 3 times per second here,
+//      not 84. A batch that is on screen every single time the interface is
+//      drawn still only reaches 35% of frames. v3's 85% bar was measuring the
+//      game's redraw cadence, not the batch's persistence. The one batch that
+//      did reach 100% ([3]) is a burst of 232 draws in 232 frames — an
+//      interface element that existed for four seconds, which is exactly what
+//      the bar was supposed to reject.
 //
-// The one property of the UID that does not drift is behavioural: it is on
-// screen at all times, including while standing still in an empty field. The
-// buttons are not. So every draw matching {ps, count} is recorded as a
-// *candidate*, grouped by the rest of its fingerprint, and each candidate
-// accumulates how many times it has been drawn. The candidate accounting for
-// the largest share of the target's draws is the UID.
+//   2. ONE LOGICAL ELEMENT ARRIVES AS SEVERAL BATCHES. The UID's slice of the
+//      shared UI index pool is re-cut as the game loads scenes, so one session
+//      produces a chain of incarnations. In the table above the three long
+//      spans tile the session end to end — 1680..4538, 4788..8948,
+//      11094..15386 — which is one element drawn from three different buffers,
+//      not three elements. v3 judged each incarnation alone, so every one of
+//      them was diluted by the gaps the others occupied.
 //
-// WHY THE SHARE IS MEASURED AGAINST THE TARGET'S OWN DRAW COUNT
+//   3. LOCKING WAS RECOMPUTED, NOT REMEMBERED. v3 rebuilt its suppression set
+//      from scratch every frame. A batch that qualified and then kept its span
+//      growing without being drawn watched its own duty fall, dropped back
+//      under the bar, and let the UID return — which is the flicker the user
+//      reports as "the UID is back sometimes".
 //
-// The obvious denominator is the frame counter, and that is what the first
-// build of this learner used. It was wrong, and one session's status file says
-// exactly how: with 7770 presented frames, the leading candidate had been
-// drawn in 1362 of them — 17%, well under the 55% threshold — and nothing was
-// suppressed. But that candidate is the UID, which draws once per frame and
-// therefore *cannot* be drawn in only one frame in six.
+// WHAT v4 CHANGES
 //
-// 7770 / 1362 is 5.7. The add-on's present callback fires about 5.7 times per
-// real frame here, so every "frame" the learner counted was really a fifth of
-// one, and a 100%-of-frames batch looked like a 17%-of-frames batch. Nothing
-// is wrong with the candidate; the ruler was.
+//   * The bar is refitted to the measurements above instead of to the one
+//     session that flattered v3: 20% duty rather than 85%. The three long-lived
+//     batches clear it; every short burst in the table is already excluded by
+//     the 300-draw minimum. This is what "the batch is drawn a substantial
+//     fraction of the time it exists" looks like once the redraw cadence is
+//     taken out of the measurement.
 //
-// Counting poses of the swapchain is not a reliable measure of time, and this
-// add-on has no business guessing at one. So the denominator is the number of
-// draws that matched the target at all: a batch that is on screen whenever the
-// game is drawing UID text has a share near 100%, and one that appears only on
-// one screen has a small share. That ratio needs no notion of a frame, which is
-// exactly why it is right and the previous one was not.
+//   * There are two ways to qualify, because the two kinds of evidence answer
+//     different questions:
 //
-// WHY THE SHARE IS EXPONENTIAL
+//       ENDURANCE - twelve hundred frames (fourteen seconds), and on a long
+//       session a twelfth of it as well, capped at twenty-four hundred so the
+//       bar can never outrun the incarnations it exists to accept. This is the
+//       slow proof that a batch is not a screen somebody is reading.
 //
-// A session-long average reads the whole session, and the player moves between
-// places that draw different text. Averaged over a whole session, the batch in
-// front of the player *now* is diluted by every batch that was in front of them
-// before. The second session measured exactly that: the batch on screen at the
-// time accounted for 100% of the recent target draws and 34.7% of the session,
-// and 34.7% is under the threshold, so the UID stayed visible for the rest of
-// the run even though the learner had already seen it dominate.
+//       EXCLUSIVITY - six hundred frames, during which the batch was alone in
+//       its frame at least three hundred times, and on at least a quarter of
+//       the frames it drew. The UID is the only fingerprinted element the game
+//       draws for most of a session, so this is the quick proof, and it is why
+//       a fresh incarnation now locks in seven seconds rather than eighteen.
 //
-// The share is therefore an exponential moving average with a time constant of
-// 2^kEmaShift target draws — about three and a half seconds of play. Old scenes
-// decay out on their own, new ones take over within seconds, and no scene
-// transition has to be detected: the statistics simply follow the game. Nothing
-// else about the decision changed, and there is still no notion of a frame
-// anywhere in it.
+//     A settlement screen can take neither route: the HUD is still behind it,
+//     so its frames are never exclusive, and it does not survive long enough to
+//     earn endurance.
 //
-// THE SAFE FAILURE
+//   * Suppression is REMEMBERED. Once a batch is confirmed it stays confirmed
+//     for the rest of the session (with a seven-minute idle eviction), so the
+//     UID cannot come back because its own statistics drifted.
 //
-// A wrong choice is the blank-white-button bug, which is worse than a visible
-// UID: the user can live with a UID on screen, not with two broken buttons. So
-// the add-on stands down instead of guessing:
+//   * Incarnations are INHERITED. When the confirmed batch stops being drawn
+//     and a new batch appears alone in a frame — the signature of the UID
+//     moving to a fresh slice of the index pool — the new batch is adopted into
+//     the confirmed set and suppressed from that frame on.
 //
-//   * no decision at all until kEarlyDraws draws have matched the target, and
-//     until kLearnWarmupDraws is passed every candidate must clear
-//     kEarlyCoveragePct — a bar only a batch that owns essentially every target
-//     draw can reach, so the opening seconds cannot be locked on a lucky streak;
-//   * past kLearnWarmupDraws the bar drops to kLearnCoveragePct, which is what
-//     catches a scene whose text is split across several batches;
-//   * a candidate needs kLearnMinDraws draws of its own before it counts at
-//     all, so a batch that flashed by briefly is never eligible;
-//   * its decayed share must clear the applicable bar against the decayed
-//     target total, so a batch on screen only briefly never qualifies, and a
-//     batch that stops being drawn decays away within seconds;
-//   * at most kMaxTargets batches are suppressed at once. More than one is
-//     deliberate: a scene can split its text across several batches, and
-//     insisting on a single winner there means the UID survives because no one
-//     batch ever dominates. The cap is what stops that from becoming "suppress
-//     everything".
-//
-// The statistics keep rolling for the whole session, so the choice follows the
-// game: open the settlement screen and both buttons get recorded but neither
-// takes over, close it and their coverage decays away.
-//
-// It also works through a game update without human intervention, which the
-// baked fingerprint never did.
-//
-// WuwaUID.ini is still read once at load if it happens to exist, and its rules
-// are honoured verbatim — those are exact fingerprints pinned by hand, and
-// they are the escape hatch if learning ever picks the wrong batch. The file is
-// never written, so deleting it changes nothing.
+// The safe failure is unchanged: a wrong choice blanks a button, which is worse
+// than a visible UID, so adoption is deliberately narrow. It happens only in
+// frames where the candidate is the ONLY batch matching the fingerprint, only
+// for a batch that has already been drawn sixty times, and only while some
+// confirmed incarnation was itself drawn within the last twenty-four hundred
+// frames.
 //
 // Live status, including the full candidate table, is written to
-// WuwaUID.status.txt next to the add-on.
+// WuwaUID.status.txt next to the add-on. Pressing F9 dumps the last 900
+// frames of per-frame UID-fingerprint draws to WuwaUID.snapshot.txt.
 // ---------------------------------------------------------------------------
 
 #include <reshade.hpp>
@@ -182,11 +164,6 @@ constexpr uint32_t kUidIndexCount = 156;
 
 // ---------------------------------------------------------------------------
 // Candidate identity: everything in a fingerprint except the match condition.
-//
-// Two UI batches that share a shader and an index count are told apart by what
-// remains. v1 assumed the index buffer offset alone was enough; keeping all the
-// remaining fields costs nothing and lets the learner separate batches that
-// differ only in `first` or `voff` as well.
 // ---------------------------------------------------------------------------
 struct CandidateKey {
 	uint32_t inst    = 1;
@@ -216,51 +193,65 @@ struct CandidateKeyHash {
 };
 
 struct Candidate {
-	uint64_t draws         = 0;   // total matching draws
-	uint64_t firstDraw     = 0;   // value of g_candidateDraws when first seen
-	uint64_t lastDrawIndex = 0;   // ... and when last seen
-	uint64_t ema           = 0;   // decayed share weight, in units of kEmaUnit
-	uint64_t framesSeen    = 0;   // distinct present frames (diagnostic only)
-	uint64_t lastFrameSeen = 0;   // ... and the frame that was
-	uint64_t suppressed    = 0;   // draws actually blocked
+	uint64_t draws      = 0;   // total matching draws
+	uint64_t firstFrame = 0;   // first present-frame this batch was drawn on
+	uint64_t lastFrame  = 0;   // ... and the most recent one
+	uint64_t firstDraw  = 0;   // value of g_candidateDraws when first seen
+	uint64_t lastDraw   = 0;   // ... and when last seen
+	uint64_t suppressed = 0;   // draws actually blocked
+	uint64_t maxGap     = 0;   // longest run of frames it was absent for
+	uint64_t segments   = 0;   // how many separate stretches it was drawn in
+	uint64_t soloFrames = 0;   // frames where it was the ONLY match in flight
+};
 
-	// The share is ema / g_emaTotal. Both decay by the same factor every time a
-	// target draw is recorded, so the ratio between them is the decayed share
-	// and needs no division by a decaying denominator kept anywhere else.
+// A batch that has been confirmed as (an incarnation of) the UID.
+struct LockedEntry {
+	uint64_t lockedAtFrame  = 0;
+	uint64_t lastActiveFrame = 0;
+	uint32_t inherited      = 0;   // 0 = met the bar itself, 1 = adopted
 };
 
 // ---------------------------------------------------------------------------
-// Learning thresholds. Every one of these exists to make a wrong answer
-// impossible rather than merely unlikely; see "THE SAFE FAILURE" in the header.
+// v4 thresholds.
 //
-// All draw counts are in units of target draws, which arrive at roughly the
-// rate the game redraws UI text — measured at 23 to 37 per second across two
-// sessions — so kLearnWarmupDraws of 90 is about two and a half seconds of play
-// and the 2^kEmaShift time constant of 64 is under two of them.
+// All of these are fitted to the status table quoted in the header, not to the
+// session v3 was tuned on:
 //
-// Two bars, not one. Before kLearnWarmupDraws the share must clear
-// kEarlyCoveragePct, which only a batch that owns essentially every target draw
-// can do — exactly what a lone text batch in an instanced scene looks like.
-// Making that case wait for the normal bar would burn seconds on a question the
-// first two dozen draws already answered. The early bar is deliberately brutal
-// because a handful of samples can spike to 85% by luck; but a spike that wrong
-// decays away within one EMA constant, so the price of being fooled is under
-// two seconds of one batch flickering.
+//   kMinHits 300        separates the three long-lived batches (2505/960/872)
+//                       from every interface burst (232 and below).
+//   kMinDutyPct 20      the redraw cadence means a resident batch sits at
+//                       23-58% of frames, not 85-100%.
+//   kMinSpanFrames 1200 fourteen seconds. This is the only thing standing
+//                       between a resident batch and a settlement screen left
+//                       open: that screen draws every frame, so its hit count
+//                       and its duty both look excellent. What it cannot fake
+//                       is age, and a player who stops to read the screen
+//                       rarely stops for fourteen seconds.
+//   kMinSpanSharePct 12 ... and on a long session age alone is not enough
+//                       either, since fourteen seconds of a six-minute session
+//                       is still a small part of it. The bar therefore tracks
+//                       the session, capped by kMaxRequiredSpan so that it can
+//                       never outrun the incarnations it exists to accept.
+//   kStaleFrames 36000  seven minutes without a draw and an entry is retired.
 // ---------------------------------------------------------------------------
-constexpr uint64_t kEmaShift         = 6;     // EMA time constant = 2^kEmaShift draws
-constexpr uint64_t kEmaUnit          = 1ull << kEmaShift;
-constexpr uint64_t kEarlyDraws       = 24;    // earliest point a decision is allowed
-constexpr uint64_t kEarlyMinDraws    = 8;     // ...and the candidate's own floor there
-constexpr uint64_t kEarlyCoveragePct = 85;    // early bar: near-total ownership
-constexpr uint64_t kLearnWarmupDraws = 90;    // after this the normal bar applies
-constexpr uint64_t kLearnMinDraws    = 24;    // a candidate needs this many of its own
-constexpr uint64_t kLearnCoveragePct = 38;    // % of the decayed target total
-constexpr size_t   kMaxCandidates    = 96;
-constexpr size_t   kMaxTargets       = 2;     // batches suppressed at once, at most
+constexpr uint64_t kMinHits        = 300;
+constexpr uint64_t kMinSpanFrames  = 1200;
+constexpr uint64_t kMinSpanSharePct = 12;
+constexpr uint64_t kMaxRequiredSpan = 2400;  // ... but never demand more than this
+constexpr uint64_t kMinDutyPct     = 20;
+constexpr uint64_t kFastSpanFrames = 600;   // seven seconds, when exclusivity proves it
+constexpr uint64_t kMinSoloFrames  = 300;   // frames this batch had the screen to itself
+constexpr uint64_t kMinSoloSharePct = 25;   // ... as a share of the draws it made
+constexpr uint64_t kMinAdoptDraws  = 60;    // evidence a batch needs to be adopted
+constexpr uint64_t kHandoverGap    = 2400;  // how long an incarnation stays adoptable
+constexpr uint64_t kStaleFrames    = 36000; // idle eviction for a locked entry
+constexpr size_t   kMaxCandidates  = 512;
+constexpr size_t   kMaxTargets     = 8;     // safety cap, not a tuning knob
+constexpr size_t   kFrameLogMax    = 900;   // per-frame log for the F9 snapshot
 
 enum class LearnState {
 	WarmingUp,    // too few target draws have passed to judge anything
-	NoCandidate,  // no batch has enough decayed share yet
+	NoCandidate,  // no batch has cleared the bar yet
 	Locked,       // one or more batches won, they are being suppressed
 };
 
@@ -280,13 +271,26 @@ std::vector<DrawKey> g_blocked;
 
 // Learned state. All of it is guarded by g_mutex.
 std::unordered_map<CandidateKey, Candidate, CandidateKeyHash> g_candidates;
-std::vector<CandidateKey> g_targets;      // batches currently suppressed
-uint64_t     g_emaTotal   = 0;            // decayed sum of every candidate's weight
+std::unordered_map<CandidateKey, LockedEntry, CandidateKeyHash> g_locked;
 bool         g_hasLearned = false;
 LearnState   g_learnState = LearnState::WarmingUp;
 
+// Batches matching the fingerprint in the frame currently being recorded.
+std::vector<CandidateKey> g_frameKeys;
+uint64_t                  g_frameKeysStamp = 0;
+
+// Per-frame log, kept as a ring buffer for the F9 snapshot.
+struct FrameRecord {
+	uint64_t                  frame = 0;
+	std::vector<CandidateKey> keys;
+};
+std::vector<FrameRecord> g_frameLog;
+size_t                   g_frameLogHead = 0;
+bool                     g_frameLogFull = false;
+
 char g_iniPath[MAX_PATH] = {};
 char g_statusPath[MAX_PATH] = {};
+char g_snapshotPath[MAX_PATH] = {};
 
 // Sentinels for the pixel-shader field of a fingerprint.
 constexpr uint64_t kPsUnknown  = 0;   // command list has no resolved pipeline
@@ -307,6 +311,11 @@ std::atomic<uint64_t> g_cmdListsSeen{0};     // init_command_list calls
 std::atomic<uint64_t> g_unresolvedBound{0};  // draws where no PSO was bound
 std::atomic<uint64_t> g_candidateDraws{0};   // draws matching {ps, count}
 std::atomic<uint64_t> g_candidatesOverflow{0}; // batches dropped at kMaxCandidates
+std::atomic<uint64_t> g_framesNoTarget{0};   // frames with no match at all
+std::atomic<uint64_t> g_framesSolo{0};       // frames with exactly one match
+std::atomic<uint64_t> g_framesMulti{0};      // frames with two or more matches
+std::atomic<uint64_t> g_adoptions{0};        // incarnations adopted by handover
+std::atomic<uint64_t> g_snapshotWanted{0};   // F9 seen, write on the next present
 
 // ---------------------------------------------------------------------------
 // Small helpers
@@ -322,9 +331,6 @@ CandidateKey candidate_key(const DrawKey &k)
 	return c;
 }
 
-// Linear scan on purpose: the .ini rule list holds a handful of entries at
-// most, and this runs on the draw path where an unordered_set lookup would
-// cost more.
 bool is_blocked_ini(const DrawKey &k)
 {
 	for (const DrawKey &b : g_blocked) {
@@ -360,13 +366,24 @@ const char *learn_state_name(LearnState s)
 	return "?";
 }
 
-// ---------------------------------------------------------------------------
-// Rule loading
+// The span a batch must reach on this session before it may be confirmed.
 //
-// Read-only by design. A line is
-// "ps[,count[,inst[,first[,voff[,indexed[,ibo]]]]]]" in hex/dec; the trailing
-// fields default to the same values the v1 built-in rule used, so a rule copied
-// out of an older status file still parses.
+// The share term is what keeps a settlement screen left open from looking
+// resident: its buttons live for as long as the screen does, which is long in
+// absolute frames but a small part of a session. A pure share, though, would
+// demand a forty-minute-old batch after an hour of play and reject every
+// incarnation the UID actually uses, so the bar is capped: 300 frames early on,
+// rising to 2400 frames (forty seconds) as the session grows, and no further.
+uint64_t required_span(uint64_t frame)
+{
+	const uint64_t share = frame * kMinSpanSharePct / 100;
+	uint64_t need = (share > kMinSpanFrames) ? share : kMinSpanFrames;
+	if (need > kMaxRequiredSpan) need = kMaxRequiredSpan;
+	return need;
+}
+
+// ---------------------------------------------------------------------------
+// Rule loading (read-only; WuwaUID.ini is never written)
 // ---------------------------------------------------------------------------
 void load_rules()
 {
@@ -400,103 +417,185 @@ void load_rules()
 // Learning
 //
 // note_candidate_locked() runs on the draw path for every batch that matches
-// {ps, count}; update_learned_targets_locked() runs once per frame.
+// {ps, count}. settle_frame_locked() and update_locks_locked() run once per
+// frame from the present callback.
 //
-// Both must be called with g_mutex held.
+// All three must be called with g_mutex held.
 // ---------------------------------------------------------------------------
 void note_candidate_locked(const DrawKey &key, uint64_t frame)
 {
 	const uint64_t drawIndex =
 		g_candidateDraws.fetch_add(1, std::memory_order_relaxed) + 1;
 
-	// Everyone fades a little before the new observation is added. This is what
-	// makes the share follow the game instead of averaging over the whole
-	// session; see "WHY THE SHARE IS EXPONENTIAL" in the header.
-	for (auto &kv : g_candidates) {
-		kv.second.ema -= kv.second.ema >> kEmaShift;
-	}
-	g_emaTotal -= g_emaTotal >> kEmaShift;
-
 	const CandidateKey ck = candidate_key(key);
 
 	auto it = g_candidates.find(ck);
 	if (it == g_candidates.end()) {
 		if (g_candidates.size() >= kMaxCandidates) {
-			// Refuse to grow without bound. The UI text pool holds far fewer
-			// distinct batches than this, so hitting the cap means something
-			// unexpected is matching, and adding to the table would only make
-			// the choice noisier.
+			// Table full. Evict the batch that has gone longest without being
+			// drawn: one that flashed once early and never came back is exactly
+			// what should lose its slot to the UID's next incarnation.
+			auto oldest = g_candidates.begin();
+			for (auto i = g_candidates.begin(); i != g_candidates.end(); ++i)
+				if (i->second.lastFrame < oldest->second.lastFrame) oldest = i;
+			g_candidates.erase(oldest);
 			g_candidatesOverflow.fetch_add(1, std::memory_order_relaxed);
-			return;
 		}
 		it = g_candidates.emplace(ck, Candidate{}).first;
 	}
 
 	Candidate &c = it->second;
-	c.draws++;
-	if (c.firstDraw == 0) c.firstDraw = drawIndex;
-	c.lastDrawIndex = drawIndex;
-	c.ema += kEmaUnit;
-	g_emaTotal += kEmaUnit;
-
-	// The frame number is recorded for the status file only. It is not used to
-	// decide anything: see "WHY THE SHARE IS MEASURED AGAINST THE TARGET'S OWN
-	// DRAW COUNT" in the header for why this add-on must not trust its own
-	// present counter as a measure of time.
-	if (c.lastFrameSeen != frame) {
-		c.framesSeen++;
-		c.lastFrameSeen = frame;
+	if (c.firstFrame != 0 && frame > c.lastFrame + 1) {
+		const uint64_t gap = frame - c.lastFrame - 1;
+		if (gap > c.maxGap) c.maxGap = gap;
+		c.segments++;
 	}
+	c.draws++;
+	if (c.firstFrame == 0) c.firstFrame = frame;
+	c.lastFrame = frame;
+	if (c.firstDraw == 0) c.firstDraw = drawIndex;
+	c.lastDraw = drawIndex;
+
+	// Record this batch as present in the frame currently being built.
+	if (g_frameKeysStamp != frame) {
+		g_frameKeys.clear();
+		g_frameKeysStamp = frame;
+	}
+	bool seen = false;
+	for (const CandidateKey &k : g_frameKeys) {
+		if (k == ck) { seen = true; break; }
+	}
+	if (!seen) g_frameKeys.push_back(ck);
 }
 
-void update_learned_targets_locked()
+// Close out the frame that was just recorded: update the solo/multi histogram,
+// log it for the snapshot, and adopt an incarnation if this is the moment.
+void settle_frame_locked(uint64_t frame)
 {
-	g_targets.clear();
-	g_hasLearned = false;
-
-	const uint64_t total = g_candidateDraws.load(std::memory_order_relaxed);
-	if (total < kEarlyDraws) {
-		g_learnState = LearnState::WarmingUp;
+	// Draws are recorded while the frame is being built, which happens before
+	// this callback fires, so anything collected belongs to the frame just gone:
+	// stamp == frame - 1. An older stamp means this frame had no match at all.
+	// Without this test the previous frame's set would be counted again on every
+	// empty frame, inflating the solo histogram and re-running the adoption rule
+	// on stale evidence.
+	if (g_frameKeys.empty() || g_frameKeysStamp + 1 != frame) {
+		g_framesNoTarget.fetch_add(1, std::memory_order_relaxed);
+		g_frameKeys.clear();
 		return;
 	}
-	if (g_emaTotal == 0) {
-		g_learnState = LearnState::NoCandidate;
+
+	// Snapshot ring buffer.
+	if (g_frameLog.size() < kFrameLogMax) {
+		g_frameLog.push_back(FrameRecord{g_frameKeysStamp, g_frameKeys});
+	} else {
+		if (!g_frameLogFull) g_frameLogFull = true;
+		g_frameLog[g_frameLogHead] = FrameRecord{g_frameKeysStamp, g_frameKeys};
+	}
+	g_frameLogHead = (g_frameLogHead + 1) % kFrameLogMax;
+
+	if (g_frameKeys.size() != 1) {
+		g_framesMulti.fetch_add(1, std::memory_order_relaxed);
 		return;
 	}
 
-	// Which bar applies is the whole speed story. A scene that draws several
-	// text batches on every frame never clears the early bar and waits for the
-	// warmup; a scene dominated by a single batch is answered almost at once.
-	const bool     early    = total < kLearnWarmupDraws;
-	const uint64_t bar      = early ? kEarlyCoveragePct : kLearnCoveragePct;
-	const uint64_t minDraws = early ? kEarlyMinDraws : kLearnMinDraws;
+	g_framesSolo.fetch_add(1, std::memory_order_relaxed);
 
-	// Every batch whose decayed share clears the bar, strongest first.
-	// The cut is recomputed every frame from decaying numbers, so a batch that
-	// stops being drawn loses its place on its own within seconds — there is no
-	// recency rule to get wrong and no stale winner to unseat.
-	std::vector<std::pair<uint64_t, CandidateKey>> hits;
+	const CandidateKey k = g_frameKeys[0];
+	const uint64_t at = g_frameKeysStamp;
+
+	auto cit = g_candidates.find(k);
+	if (cit != g_candidates.end()) cit->second.soloFrames++;
+
+	if (g_locked.find(k) != g_locked.end()) return;
+
+	// The UID moved to a fresh slice of the index pool: the confirmed batch has
+	// just stopped and this one is alone in the frame. Adopt it - but only once
+	// it has shown that it keeps coming back. A batch that happened to be alone
+	// on a single frame, in the gap between two incarnations, is not the UID; it
+	// is whatever else the game drew while the UID was away.
+	if (cit == g_candidates.end() || cit->second.draws < kMinAdoptDraws) return;
+
+	uint64_t mostRecent = 0;
+	for (const auto &e : g_locked) {
+		if (e.second.lastActiveFrame > mostRecent) mostRecent = e.second.lastActiveFrame;
+	}
+	if (mostRecent == 0 || at <= mostRecent) return;
+	if (at - mostRecent > kHandoverGap) return;
+	if (g_locked.size() >= kMaxTargets) return;
+
+	LockedEntry le;
+	le.lockedAtFrame   = at;
+	le.lastActiveFrame = at;
+	le.inherited       = 1;
+	g_locked.emplace(k, le);
+	g_adoptions.fetch_add(1, std::memory_order_relaxed);
+
+	(void)frame;
+}
+
+// Confirm batches that meet the bar, and retire entries that stopped being
+// drawn long ago. The set only ever grows within a session; that is the fix for
+// v3's flicker.
+//
+// There are two ways in, because the two kinds of evidence answer different
+// questions. Endurance is the slow proof: a batch drawn for fourteen seconds
+// that still comes back a fifth of the time is not a screen somebody is
+// reading. Exclusivity is the quick proof: the UID is the only fingerprinted
+// element the game draws for most of a session, so a batch that keeps being
+// drawn on frames where nothing else matched is resident and can be confirmed
+// in seven seconds. A settlement screen never earns that proof - the HUD is
+// still behind it, so its frames are never exclusive - which leaves it only the
+// slow route, and slow is precisely what the endurance bar refuses.
+void update_locks_locked(uint64_t frame)
+{
+	const uint64_t needSpan = required_span(frame);
+
 	for (const auto &kv : g_candidates) {
-		const Candidate &c = kv.second;
-		if (c.draws < minDraws) continue;
-		if (c.ema * 100 < g_emaTotal * bar) continue;
-		hits.emplace_back(c.ema, kv.first);
+		const CandidateKey &k = kv.first;
+		const Candidate   &c = kv.second;
+		if (g_locked.find(k) != g_locked.end()) continue;
+		if (c.draws < kMinHits) continue;
+		if (c.firstFrame == 0) continue;
+
+		const uint64_t span = c.lastFrame - c.firstFrame + 1;
+		if (c.draws * 100 < span * kMinDutyPct) continue;
+
+		const bool enduring  = span >= needSpan;
+		const bool exclusive = span >= kFastSpanFrames &&
+		                       c.soloFrames >= kMinSoloFrames &&
+		                       c.soloFrames * 100 >= c.draws * kMinSoloSharePct;
+		if (!enduring && !exclusive) continue;
+
+		if (g_locked.size() >= kMaxTargets) {
+			auto oldest = g_locked.begin();
+			for (auto i = g_locked.begin(); i != g_locked.end(); ++i)
+				if (i->second.lastActiveFrame < oldest->second.lastActiveFrame) oldest = i;
+			g_locked.erase(oldest);
+		}
+
+		LockedEntry le;
+		le.lockedAtFrame   = frame;
+		le.lastActiveFrame = c.lastFrame;
+		le.inherited       = 0;
+		g_locked.emplace(k, le);
 	}
 
-	if (hits.empty()) {
-		g_learnState = early ? LearnState::WarmingUp : LearnState::NoCandidate;
+	// Retire entries that have not been drawn for seven minutes. The UID comes
+	// back after a loading screen, but never after that long.
+	for (auto it = g_locked.begin(); it != g_locked.end(); ) {
+		if (frame > it->second.lastActiveFrame &&
+		    frame - it->second.lastActiveFrame > kStaleFrames)
+			it = g_locked.erase(it);
+		else
+			++it;
+	}
+
+	if (g_locked.empty()) {
+		g_learnState = (g_candidateDraws.load(std::memory_order_relaxed) < kMinHits)
+		               ? LearnState::WarmingUp : LearnState::NoCandidate;
+		g_hasLearned = false;
 		return;
 	}
-
-	std::sort(hits.begin(), hits.end(),
-	          [](const std::pair<uint64_t, CandidateKey> &a,
-	             const std::pair<uint64_t, CandidateKey> &b) {
-		          return a.first > b.first;
-	          });
-	if (hits.size() > kMaxTargets) hits.resize(kMaxTargets);
-
-	g_targets.reserve(hits.size());
-	for (size_t i = 0; i < hits.size(); ++i) g_targets.push_back(hits[i].second);
 
 	g_hasLearned = true;
 	g_learnState = LearnState::Locked;
@@ -505,6 +604,12 @@ void update_learned_targets_locked()
 // ---------------------------------------------------------------------------
 // Status file
 // ---------------------------------------------------------------------------
+bool g_locked_contains(const CandidateKey &k)
+{
+	std::lock_guard<std::mutex> lock(g_mutex);
+	return g_locked.find(k) != g_locked.end();
+}
+
 struct CandidateRow {
 	CandidateKey key;
 	Candidate    stat;
@@ -512,15 +617,12 @@ struct CandidateRow {
 
 void write_status()
 {
-	// Called from the present callback; snapshot under the lock, then do the
-	// file I/O with the lock released.
 	std::vector<DrawKey>      blocked;
 	std::vector<CandidateRow> rows;
-	std::vector<CandidateKey> targets;
+	std::vector<std::pair<CandidateKey, LockedEntry>> locks;
 	bool hasLearned = false;
 	LearnState state = LearnState::WarmingUp;
 	uint64_t targetDraws = 0;
-	uint64_t emaTotal = 0;
 	{
 		std::lock_guard<std::mutex> lock(g_mutex);
 		blocked = g_blocked;
@@ -528,19 +630,20 @@ void write_status()
 		for (const auto &kv : g_candidates) {
 			rows.push_back(CandidateRow{kv.first, kv.second});
 		}
-		targets = g_targets;
+		for (const auto &kv : g_locked) locks.push_back(kv);
 		hasLearned = g_hasLearned;
 		state = g_learnState;
 		targetDraws = g_candidateDraws.load(std::memory_order_relaxed);
-		emaTotal = g_emaTotal;
 	}
 
-	// Sorted by decayed share, which is the quantity the decision is made on —
-	// sorting by the session-long count would put a batch from a place the
-	// player left an hour ago at the top of the table.
 	std::sort(rows.begin(), rows.end(),
 	          [](const CandidateRow &a, const CandidateRow &b) {
-		          return a.stat.ema > b.stat.ema;
+		          return a.stat.draws > b.stat.draws;
+	          });
+	std::sort(locks.begin(), locks.end(),
+	          [](const std::pair<CandidateKey, LockedEntry> &a,
+	             const std::pair<CandidateKey, LockedEntry> &b) {
+		          return a.second.lockedAtFrame < b.second.lockedAtFrame;
 	          });
 
 	FILE *f = nullptr;
@@ -549,7 +652,7 @@ void write_status()
 	const auto u = [](uint64_t v) { return static_cast<unsigned long long>(v); };
 	const uint64_t frame = g_frame.load();
 
-	fprintf(f, "WuwaUID v2 live status\n");
+	fprintf(f, "WuwaUID v4 live status\n");
 	fprintf(f, "======================\n");
 	fprintf(f, "mode                : automatic (target learned at runtime, no hotkeys)\n");
 	fprintf(f, "frames              : %llu\n", u(frame));
@@ -563,33 +666,31 @@ void write_status()
 	        static_cast<unsigned long long>(kUidPsHash), kUidIndexCount);
 	fprintf(f, "draws on target     : %llu\n", u(targetDraws));
 	fprintf(f, "state               : %s\n", learn_state_name(state));
-	if (targetDraws < kLearnWarmupDraws) {
-		fprintf(f, "  early bar         : %llu%% share, from %llu draws (a lone batch)\n",
-		        u(kEarlyCoveragePct), u(kEarlyDraws));
-		fprintf(f, "  normal bar        : %llu%% share, after %llu draws (%llu so far)\n",
-		        u(kLearnCoveragePct), u(kLearnWarmupDraws), u(targetDraws));
-	}
-	if (hasLearned) {
-		for (size_t i = 0; i < targets.size(); ++i) {
-			char k[224] = {};
-			format_candidate(targets[i], k, sizeof(k));
-			fprintf(f, "suppressing         : %s\n", k);
-		}
-	} else {
-		// This is the safe failure: the UID is on screen and nothing is being
-		// suppressed, which is the intended outcome when the choice is unclear.
+	fprintf(f, "bar                 : %llu draws, %llu%% duty, span >= %llu frames (now)\n",
+	        u(kMinHits), u(kMinDutyPct), u(required_span(frame)));
+	fprintf(f, "incarnations adopted: %llu\n", u(g_adoptions.load()));
+
+	if (locks.empty()) {
 		fprintf(f, "suppressing         : nothing\n");
+	} else {
+		for (const auto &e : locks) {
+			char k[224] = {};
+			format_candidate(e.first, k, sizeof(k));
+			fprintf(f, "suppressing         : %s%s (locked@%llu last@%llu)\n",
+			        k, e.second.inherited ? " [inherited]" : "",
+			        u(e.second.lockedAtFrame), u(e.second.lastActiveFrame));
+		}
 	}
 	if (g_candidatesOverflow.load() != 0) {
 		fprintf(f, "candidate overflow  : %llu (table full at %zu)\n",
 		        u(g_candidatesOverflow.load()), kMaxCandidates);
 	}
 
-	// The share column is the decision itself, so it is what the status file
-	// leads with: a candidate near 100% is on screen whenever the game draws
-	// UID text, and the buttons never get near that.
-	fprintf(f, "\ncandidates by decayed share (time constant %llu target draws):\n",
-	        u(kEmaUnit));
+	// The duty column is the decision itself. `solo` counts the frames in which
+	// this batch was the only match in flight — that is the population the
+	// adoption rule draws from, and a UID batch should dominate it.
+	fprintf(f, "\ncandidates (bar: %llu draws, %llu%% duty, span >= %llu):\n",
+	        u(kMinHits), u(kMinDutyPct), u(required_span(frame)));
 	if (rows.empty()) {
 		fprintf(f, "  (none - the target fingerprint has not been seen)\n");
 	}
@@ -597,16 +698,23 @@ void write_status()
 		const CandidateRow &r = rows[i];
 		char k[224] = {};
 		format_candidate(r.key, k, sizeof(k));
-		const uint64_t pct = (emaTotal != 0) ? (r.stat.ema * 100 / emaTotal) : 0;
-		const bool leader = hasLearned &&
-		                    std::find(targets.begin(), targets.end(), r.key) != targets.end();
-		fprintf(f, "  [%zu] %-56s share %3llu%%  draws %llu  seen %llu..%llu%s\n",
-		        i, k, u(pct), u(r.stat.draws), u(r.stat.firstDraw),
-		        u(r.stat.lastDrawIndex), leader ? "   <-- suppressed" : "");
+		const uint64_t span = (r.stat.lastFrame >= r.stat.firstFrame)
+		                      ? (r.stat.lastFrame - r.stat.firstFrame + 1) : 0;
+		const uint64_t duty = (span != 0) ? (r.stat.draws * 100 / span) : 0;
+		const bool leader = g_locked_contains(r.key);
+		fprintf(f, "  [%zu] %-56s duty %3llu%%  draws %6llu  span %llu..%llu  solo %llu  gap %llu  seg %llu%s\n",
+		        i, k, u(duty), u(r.stat.draws), u(r.stat.firstFrame),
+		        u(r.stat.lastFrame), u(r.stat.soloFrames), u(r.stat.maxGap),
+		        u(r.stat.segments), leader ? "   <-- suppressed" : "");
 	}
 	if (rows.size() > 24) {
 		fprintf(f, "  ... and %zu more\n", rows.size() - 24);
 	}
+
+	fprintf(f, "\n--- per-frame match count ---\n");
+	fprintf(f, "  frames with 0 matches : %llu\n", u(g_framesNoTarget.load()));
+	fprintf(f, "  frames with 1 match   : %llu\n", u(g_framesSolo.load()));
+	fprintf(f, "  frames with 2+ matches: %llu\n", u(g_framesMulti.load()));
 
 	fprintf(f, "\n--- diagnostics ---\n");
 	fprintf(f, "pipelines seen      : %llu (with pixel shader: %llu)\n",
@@ -615,6 +723,7 @@ void write_status()
 	        u(g_bindsSeen.load()), u(g_bindsResolved.load()));
 	fprintf(f, "command lists       : %llu\n", u(g_cmdListsSeen.load()));
 	fprintf(f, "draws w/o bound PSO : %llu\n", u(g_unresolvedBound.load()));
+	fprintf(f, "snapshot            : press F9 to dump the last %zu frames\n", kFrameLogMax);
 
 	if (!blocked.empty()) {
 		fprintf(f, "\nmanual rules (from WuwaUID.ini, always honoured):\n");
@@ -625,6 +734,39 @@ void write_status()
 		}
 	}
 
+	fclose(f);
+}
+
+// F9 snapshot: the last kFrameLogMax frames, oldest first, one frame per line.
+void write_snapshot()
+{
+	std::vector<FrameRecord> log;
+	{
+		std::lock_guard<std::mutex> lock(g_mutex);
+		log.reserve(g_frameLog.size());
+		if (g_frameLogFull) {
+			for (size_t i = 0; i < g_frameLog.size(); ++i)
+				log.push_back(g_frameLog[(g_frameLogHead + i) % g_frameLog.size()]);
+		} else {
+			log = g_frameLog;
+		}
+	}
+
+	FILE *f = nullptr;
+	if (fopen_s(&f, g_snapshotPath, "w") != 0 || f == nullptr) return;
+
+	const auto u = [](uint64_t v) { return static_cast<unsigned long long>(v); };
+	fprintf(f, "WuwaUID v4 snapshot - per-frame draws matching ps=%016llX count=%u\n",
+	        static_cast<unsigned long long>(kUidPsHash), kUidIndexCount);
+	fprintf(f, "frame, match_count, then one 'inst/first/voff/indexed/ibo' set per match\n\n");
+	for (const FrameRecord &r : log) {
+		fprintf(f, "%llu %zu", u(r.frame), r.keys.size());
+		for (const CandidateKey &k : r.keys) {
+			fprintf(f, "  %u/%u/%d/%u/%llu", k.inst, k.first, k.voff, k.indexed,
+			        static_cast<unsigned long long>(k.ibo));
+		}
+		fprintf(f, "\n");
+	}
 	fclose(f);
 }
 
@@ -687,9 +829,7 @@ void on_bind_pipeline(command_list *cmd_list, pipeline_stage, pipeline p)
 	// Do NOT filter on `stages` here. DX12 binds a whole pipeline state object
 	// in one call and ReShade does not reliably report a pixel_shader bit for
 	// it, so testing the mask silently drops every graphics bind and leaves
-	// every draw looking like it has no pixel shader. A compute bind is
-	// harmless: it resolves to a pipeline with no pixel shader and is recorded
-	// as kPsNoShader.
+	// every draw looking like it has no pixel shader.
 	g_bindsSeen.fetch_add(1, std::memory_order_relaxed);
 
 	std::lock_guard<std::mutex> lock(g_mutex);
@@ -703,10 +843,8 @@ void on_bind_pipeline(command_list *cmd_list, pipeline_stage, pipeline p)
 void on_bind_index_buffer(command_list *cmd_list, resource, uint64_t offset, uint32_t)
 {
 	// Only the offset is kept. The resource handle is a pointer that changes
-	// every run. The offset is not stable across runs either — that is what v1
-	// got wrong — but it is stable *within* a run, which is what the learner
-	// needs: it only has to tell this session's UID batch apart from this
-	// session's button batches.
+	// every run, and the offset is not stable across runs either — but within a
+	// run it is what tells this session's incarnations apart.
 	std::lock_guard<std::mutex> lock(g_mutex);
 	g_indexBufferOffset[cmd_list] = offset;
 }
@@ -730,22 +868,20 @@ bool record_and_decide(const DrawKey &key)
 	if (key.ps != kUidPsHash || key.count != kUidIndexCount)
 		return false;
 
-	// The UID and the buttons share shader and count, so this is where the
-	// lock is taken on the draw path: roughly 30 draws per second.
 	std::lock_guard<std::mutex> lock(g_mutex);
-	note_candidate_locked(key, g_frame.load(std::memory_order_relaxed));
-
-	if (!g_hasLearned)
-		return false;
+	const uint64_t frame = g_frame.load(std::memory_order_relaxed);
+	note_candidate_locked(key, frame);
 
 	const CandidateKey ck = candidate_key(key);
-	for (size_t i = 0; i < g_targets.size(); ++i) {
-		if (g_targets[i] == ck) {
-			g_suppressed.fetch_add(1, std::memory_order_relaxed);
-			return true;
-		}
-	}
-	return false;
+	auto it = g_locked.find(ck);
+	if (it == g_locked.end())
+		return false;
+
+	it->second.lastActiveFrame = frame;
+	if (auto cit = g_candidates.find(ck); cit != g_candidates.end())
+		cit->second.suppressed++;
+	g_suppressed.fetch_add(1, std::memory_order_relaxed);
+	return true;
 }
 
 DrawKey make_key(command_list *cmd_list, uint32_t count, uint32_t inst,
@@ -798,12 +934,21 @@ void on_present(command_queue *, swapchain *, const rect *, const rect *,
 {
 	const uint64_t frame = g_frame.fetch_add(1, std::memory_order_relaxed) + 1;
 
-	// Re-evaluate the choice once per frame. Cheap: the candidate table holds a
-	// few dozen entries at most.
+	// Close out the frame just recorded, then re-evaluate the confirmed set.
+	// Both are cheap: the candidate table holds a few dozen entries at most.
 	{
 		std::lock_guard<std::mutex> lock(g_mutex);
-		update_learned_targets_locked();
+		settle_frame_locked(frame);
+		update_locks_locked(frame);
 	}
+
+	// F9 dumps the recent per-frame log so a leak can be traced afterwards.
+	static bool f9Down = false;
+	const bool f9Now = (GetAsyncKeyState(VK_F9) & 0x8000) != 0;
+	if (f9Now && !f9Down) g_snapshotWanted.store(1, std::memory_order_relaxed);
+	f9Down = f9Now;
+	if (g_snapshotWanted.exchange(0, std::memory_order_relaxed) != 0)
+		write_snapshot();
 
 	// Refresh the status file about twice per second. It is the only output
 	// this add-on produces, and it is what tells you what it decided and why.
@@ -832,6 +977,13 @@ BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID)
 			if (char *slash = strrchr(path, '\\')) *slash = '\0';
 			snprintf(g_iniPath, sizeof(g_iniPath), "%s\\WuwaUID.ini", path);
 			snprintf(g_statusPath, sizeof(g_statusPath), "%s\\WuwaUID.status.txt", path);
+			snprintf(g_snapshotPath, sizeof(g_snapshotPath), "%s\\WuwaUID.snapshot.txt", path);
+		}
+
+		{
+			std::lock_guard<std::mutex> lock(g_mutex);
+			g_frameLog.reserve(kFrameLogMax);
+			g_frameKeys.reserve(8);
 		}
 
 		load_rules();
